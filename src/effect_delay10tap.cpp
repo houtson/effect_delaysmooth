@@ -3,6 +3,7 @@
  * Modified for single samples delay line (rather than blocks) and tape delay like behaviour PMF 02-09-2020
  * added delayfade to fade between old and new delay time with expo cross fade PMF 04-09-2020
  * added delaysmooth to smoothly delay from old to new time PMF 14-10-2020
+ * changed inc approach inspired by https://github.com/qbroquetas/IV-XDelay 14/01/2021
  */
 #include "effect_delay10tap.h"
 
@@ -55,11 +56,12 @@ uint32_t AudioEffectDelay10tap::delayfade(uint8_t channel, float milliseconds, f
 }
 
 // activate a tap and/or change time without fading but smoothly changing delaytime
-uint32_t AudioEffectDelay10tap::delaysmooth(uint8_t channel, float milliseconds) {
-  long temp;
+uint32_t AudioEffectDelay10tap::delaysmooth(uint8_t channel, float milliseconds, int16_t _inc) {
   if (channel >= DELAY_NUM_TAPS) return 0;
   if (milliseconds < 0.0) milliseconds = 0.0;
-
+  delay_inc = _inc/100000.0;
+  if (delay_inc < DELAY_INC)
+    delay_inc = DELAY_INC;
   uint32_t delay_length_samples = millisToSamples(milliseconds);
   if (delay_length_samples > max_delay_length_samples) delay_length_samples = max_delay_length_samples;
 
@@ -67,32 +69,18 @@ uint32_t AudioEffectDelay10tap::delaysmooth(uint8_t channel, float milliseconds)
   // enable disabled channel
   if (!(activemask & (1 << channel))) {
     // if not previously activie just move straight to it
-    tap[channel].delay_mode = DELAY_MODE_NORMAL;
     tap[channel].current_delay = tap[channel].desired_delay = delay_length_samples;
-    tap[channel].fade_samples_to_complete_transition = 0;
     activemask |= (1 << channel);
   } else {
-    // if already active...set desired and current delay
+    // if already active...set desired
     tap[channel].desired_delay = delay_length_samples;
-    tap[channel].current_delay = tap[channel].current_delay + (static_cast<int32_t>(tap[channel].inc) * tap[channel].inc_direction);
-    tap[channel].fade_samples_to_complete_transition = 0;
-    // if desire and current different set a rate to increment to desired
     if (tap[channel].current_delay != tap[channel].desired_delay) {
-      // set direction to increment in, initialise and set the rate from 1 semiton to 1 octave based on size of change required
-      if (tap[channel].current_delay > tap[channel].desired_delay) tap[channel].inc_direction = -1;
-      if (tap[channel].current_delay < tap[channel].desired_delay) tap[channel].inc_direction = 1;
-      tap[channel].inc = 0.0;
+      tap[channel].current_delay_float = tap[channel].current_delay;
       tap[channel].last_sample = 0;
-      // set the speed of increment based on how much delaytime has change - this is completely arbitary/tune to your needs
-      // the delay_inc_per_semitone[] is an array of calculated increments to semitone pitch changes when incrementing
-      temp = map(abs(tap[channel].current_delay - tap[channel].desired_delay), 0, (static_cast<float>(max_delay_length_samples) * .8), 1, 12);
-      tap[channel].inc_per_sample = delay_inc_per_semitone[constrain(temp, 0, 12)];
       tap[channel].delay_mode = DELAY_MODE_SMOOTH;
-      // Serial.printf("delaySmooth time:%d increment:%d (semitones)\n", tap[channel].desired_delay, temp);
     } else {
-      // desired and current are equal so normal delay and no change
+      // already at desired
       tap[channel].delay_mode = DELAY_MODE_NORMAL;
-      tap[channel].current_delay = tap[channel].desired_delay;
     }
   }
   __enable_irq();
@@ -114,9 +102,6 @@ void AudioEffectDelay10tap::update(void) {
 
   int16_t next_sample = 0;
   int16_t sample = 0;
-
-  int32_t inc_samples;
-  float inc_frac;
 
   if (delay_line == NULL) return;
   // reading and wriitng the block separately so grab a copy of the write_index starting poisition
@@ -149,8 +134,7 @@ void AudioEffectDelay10tap::update(void) {
     output_data_pointer = output->data;
 
     // if fading between current delay to desired , position desired read head
-    if (tap[channel].fade_samples_to_complete_transition > 0)
-      fade_to_read_index = ((start_index - tap[channel].fade_to_delay_samples + max_delay_length_samples) % max_delay_length_samples);
+    if (tap[channel].delay_mode == DELAY_MODE_FADE) fade_to_read_index = ((start_index - tap[channel].fade_to_delay_samples + max_delay_length_samples) % max_delay_length_samples);
 
     // position the main read head (current_delay_) for this channel / tap
     read_index = ((start_index - tap[channel].current_delay + max_delay_length_samples) % max_delay_length_samples);
@@ -179,7 +163,7 @@ void AudioEffectDelay10tap::update(void) {
             fade_to_read_index = ((start_index - tap[channel].fade_to_delay_samples + max_delay_length_samples) % max_delay_length_samples);
             // re-set fade multipliers
             tap[channel].fade_multiplier_out = 1.0;  // initialise the multiplier to be applied as gain on outgoing tap
-            tap[channel].fade_multiplier_in = 0.01;  // initialise the multiplier to be applied as gain on incoming tap
+            tap[channel].fade_multiplier_in = 0.01;  // initialise the multiplier to               be applied as gain on incoming tap
             tap[channel].delay_mode = DELAY_MODE_FADE;
           }
         }
@@ -191,24 +175,35 @@ void AudioEffectDelay10tap::update(void) {
       // smooth transition from one delay time to another
       //
       if (tap[channel].delay_mode == DELAY_MODE_SMOOTH) {
-        // move the delay time by a small increment (inc), split inc into numbers of sample + frac apply direction +-
-        tap[channel].inc += tap[channel].inc_per_sample;
-        inc_samples = static_cast<int32_t>(tap[channel].inc);
-        inc_frac = tap[channel].inc - static_cast<float>(inc_samples);
-        inc_samples *= tap[channel].inc_direction;
+        // move the delay time by a small increment (DELAY_INC), split into numbers of sample + frac
+        tap[channel].current_delay_float = tap[channel].current_delay_float + delay_inc * static_cast<double>(tap[channel].desired_delay - tap[channel].current_delay_float);
+        /*if (tap[channel].current_delay > tap[channel].desired_delay){
+          tap[channel].current_delay_float = tap[channel].current_delay_float - DELAY_INC ;
+        }else {
+          tap[channel].current_delay_float = tap[channel].current_delay_float + DELAY_INC;
+        }*/
+        tap[channel].current_delay = static_cast<int32_t>(tap[channel].current_delay_float);
         // check if reached desired delay
-        if (tap[channel].current_delay + inc_samples == tap[channel].desired_delay) {
-          // reached desire delay, re-set current and re-position index and change to normal delay
+        if (abs(tap[channel].current_delay_float - tap[channel].desired_delay) < 1) {
           tap[channel].current_delay = tap[channel].desired_delay;
-          tap[channel].inc = 0.0;
+          Serial.print("=\n");
+          // reached desire delay, re-position index and change to normal delay
           read_index = ((start_index + i - tap[channel].current_delay + max_delay_length_samples) % max_delay_length_samples);
           tap[channel].delay_mode = DELAY_MODE_NORMAL;
         } else {
           // not reached desired yet so get next sample and interpolate
-          sample = delay_line[(read_index - inc_samples + max_delay_length_samples) % max_delay_length_samples];
-          next_sample = delay_line[(read_index - inc_samples - tap[channel].inc_direction + max_delay_length_samples) % max_delay_length_samples];
+          // Serial.print(".");
+          // Serial.printf("Cur:%d Des:%d Flt:%.9f\n", tap[channel].current_delay, tap[channel].desired_delay, tap[channel].current_delay_float);
+          int sample_idx = (start_index + i - tap[channel].current_delay + max_delay_length_samples) % max_delay_length_samples;
+          int next_idx = (start_index + i - (tap[channel].current_delay + 1) + max_delay_length_samples) % max_delay_length_samples;
+          // Serial.printf("S_idx:%d N_idx:%d\n", sample_idx, next_idx);
+          sample = delay_line[sample_idx];
+          next_sample = delay_line[next_idx];
+          // sample = delay_line[(read_index - tap[channel].current_delay + max_delay_length_samples) % max_delay_length_samples];
+          // next_sample = delay_line[(read_index - (tap[channel].current_delay + 1) + max_delay_length_samples) % max_delay_length_samples];
           if (tap[channel].last_sample == 0) tap[channel].last_sample = sample;  // if just starting help the allpass tune in quickly
-          *output_data_pointer++ = tap[channel].last_sample = allPassInterpolSamples(sample, next_sample, tap[channel].last_sample, inc_frac);
+          *output_data_pointer++ = tap[channel].last_sample =
+              allPassInterpolSamples(sample, next_sample, tap[channel].last_sample, abs(tap[channel].current_delay_float - tap[channel].current_delay));
         }
       }
       //
@@ -218,7 +213,6 @@ void AudioEffectDelay10tap::update(void) {
         // read delay line and send sample to the output block
         *output_data_pointer++ = delay_line[read_index];
       }
-
       // increment and wrap around the  read index
       read_index++;
       if (read_index >= max_delay_length_samples) read_index = 0;
@@ -230,8 +224,8 @@ void AudioEffectDelay10tap::update(void) {
 }
 
 // set the increment for the smooth delay
-void AudioEffectDelay10tap::setDelayIncPerSample(uint8_t channel, float _DELAYINC) {
-  tap[channel].inc_per_sample = _DELAYINC;
-  if (tap[channel].inc_per_sample < 0.1) tap[channel].inc_per_sample = 0.1;
-  if (tap[channel].inc_per_sample > 1.0) tap[channel].inc_per_sample = 1.0;
+void AudioEffectDelay10tap::setDelayIncPerSample(uint8_t channel, float _DELAYINC){
+    /*tap[channel].inc_per_sample = _DELAYINC;
+    if (tap[channel].inc_per_sample < 0.1) tap[channel].inc_per_sample = 0.1;
+    if (tap[channel].inc_per_sample > 1.0) tap[channel].inc_per_sample = 1.0;*/
 };

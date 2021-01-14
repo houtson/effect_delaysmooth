@@ -1,5 +1,11 @@
 // example of effect_delay10tap
 //
+//
+//    delaysmooth( channel,  milliseconds,  _inc)
+//    channel 0-9
+//    millisecond = delay time (float)
+//    _inc = rate of change try between 1(slow) and 10 (faster)
+//
 
 #include <Audio.h>
 #include <ResponsiveAnalogRead.h>
@@ -47,7 +53,7 @@ void setup() {
   // set up the mixer including some feedback
   mixer1.gain(0, 0.5);
   mixer1.gain(1, 0.5);
-  mixer1.gain(2, 0.6);
+  mixer1.gain(2, 0.0);
 
   // start up the effect and pass it an array to store the samples
   delay1.begin(delay_line, DELAYLINE_MAX_LEN);
@@ -59,8 +65,8 @@ void loop() {
     // update and check the pot
     delayTimeKnob.update();
     if (delayTimeKnob.hasChanged()) {
-      //Serial.printf("Delay Time Knob:%d\n", delayTimeKnob.getValue());
-      delay1.delaysmooth(0, delayTimeKnob.getValue());
+      delay1.delaysmooth(0, delayTimeKnob.getValue(), 1);
+      Serial.printf("Delay Time Millis:%d\n", delayTimeKnob.getValue());
     }
     loop0_timer = 0;
   }

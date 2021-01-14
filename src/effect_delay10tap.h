@@ -11,7 +11,7 @@
 #include "AudioStream.h"
 
 #define DELAY_NUM_TAPS 10                       // max numer of fixed delay taps / channels
-#define DELAY_INC 0.19                          // delaysmooth, default increment per samples for delaysmooth
+#define DELAY_INC 0.00001                       // delaysmooth, minimum increment per samples for delaysmooth
 
 class AudioEffectDelay10tap : public AudioStream {
  public:
@@ -20,7 +20,7 @@ class AudioEffectDelay10tap : public AudioStream {
   void begin(int16_t *delay_line, uint32_t max_delay_length);
   // activate a tap and/or change time with a fade between old and new time (no clicks), transition time in millis
   uint32_t delayfade(uint8_t channel, float milliseconds, float transition_time);
-  uint32_t delaysmooth(uint8_t channel, float milliseconds);
+  uint32_t delaysmooth(uint8_t channel, float milliseconds, int16_t _inc);
   void setDelayIncPerSample(uint8_t channel, float _DELAYINC);
   // disable a tap
   void disable(uint8_t channel);
@@ -49,6 +49,7 @@ class AudioEffectDelay10tap : public AudioStream {
   uint32_t write_index;               // write head position
   uint16_t activemask;                // which taps/channels are active
   int16_t *delay_line;                // pointer to delay line
+  float delay_inc = DELAY_INC;    // rate to increment delay when smooth change to delay time
 
   // delay modes
   enum delay_modes { DELAY_MODE_NORMAL, DELAY_MODE_SMOOTH, DELAY_MODE_FADE };
@@ -64,9 +65,7 @@ class AudioEffectDelay10tap : public AudioStream {
     double fade_multiplier_out;
     double fade_multiplier_in;
     double fade_expo_multiplier;
-    int16_t inc_direction = 1;   // direction (+/-) to increment if delaysmooth
-    float inc = 0.0;             // cummulative increment if delaysmooth
-    float inc_per_sample = 0.0;  // increment per sample if delaysmooth
+    float current_delay_float = 0.0;             // cummulative increment if delaysmooth
     int16_t delay_mode = DELAY_MODE_NORMAL;
   } tap_struct;
   tap_struct tap[DELAY_NUM_TAPS];
